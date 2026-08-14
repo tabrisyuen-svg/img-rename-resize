@@ -13,5 +13,6 @@ export default defineConfig({
     },
     minify: 'esbuild',
     sourcemap: false,
+    chunkSizeWarningLimit: 500,
   }
 })
