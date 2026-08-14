@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback } from 'react';
-import JSZip from 'jszip';
 import { Upload, X, Settings, FileArchive, Image, Trash2, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -31,24 +30,31 @@ const buildZipName = (brand, sku) => {
   return prefix ? `${prefix}.zip` : 'images.zip';
 };
 
-const resizeImageToCanvas = (imgEl, size, fitBg) => {
+// ── 優化：用 createImageBitmap 取代 new Image()，GPU 解碼更快 ──
+const resizeImageToCanvas = async (url, size, fitBg) => {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+
   const canvas = document.createElement('canvas');
   canvas.width = size.w;
   canvas.height = size.h;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: false });
+
   if (size.fit === 'contain') {
     ctx.fillStyle = fitBg;
     ctx.fillRect(0, 0, size.w, size.h);
-    const scale = Math.min(size.w / imgEl.naturalWidth, size.h / imgEl.naturalHeight);
-    const dw = imgEl.naturalWidth * scale;
-    const dh = imgEl.naturalHeight * scale;
-    ctx.drawImage(imgEl, (size.w - dw) / 2, (size.h - dh) / 2, dw, dh);
+    const scale = Math.min(size.w / bitmap.width, size.h / bitmap.height);
+    const dw = bitmap.width * scale;
+    const dh = bitmap.height * scale;
+    ctx.drawImage(bitmap, (size.w - dw) / 2, (size.h - dh) / 2, dw, dh);
   } else {
-    const scale = Math.max(size.w / imgEl.naturalWidth, size.h / imgEl.naturalHeight);
-    const dw = imgEl.naturalWidth * scale;
-    const dh = imgEl.naturalHeight * scale;
-    ctx.drawImage(imgEl, (size.w - dw) / 2, (size.h - dh) / 2, dw, dh);
+    const scale = Math.max(size.w / bitmap.width, size.h / bitmap.height);
+    const dw = bitmap.width * scale;
+    const dh = bitmap.height * scale;
+    ctx.drawImage(bitmap, (size.w - dw) / 2, (size.h - dh) / 2, dw, dh);
   }
+  bitmap.close(); // 釋放記憶體
   return canvas;
 };
 
@@ -108,51 +114,34 @@ export default function App() {
     setDownloadProgress(0);
     for (let i = 0; i < images.length; i++) {
       const img = images[i];
-      await new Promise((resolve) => {
-        const el = document.createElement('img');
-        el.crossOrigin = 'anonymous';
-        el.onload = () => {
-          const canvas = resizeImageToCanvas(el, currentSize, fitBg);
-          canvas.toBlob((blob) => {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = buildImageName(brand, sku, i);
-            a.click();
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-            setDownloadProgress(i + 1);
-            resolve();
-          }, 'image/jpeg', 0.95);
-        };
-        el.src = img.url;
-      });
+      const canvas = await resizeImageToCanvas(img.url, currentSize, fitBg);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = buildImageName(brand, sku, i);
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setDownloadProgress(i + 1);
       await new Promise((r) => setTimeout(r, 350));
     }
     setIsDownloading(false);
     setDownloadProgress(0);
   };
 
-  // ── ZIP 下載 ───────────────────────────────────────────
+  // ── ZIP 下載（JSZip 用到才載入）─────────────────────────
   const handleDownloadZip = async () => {
     if (images.length === 0 || isZipping) return;
     setIsZipping(true);
     setZipProgress(0);
+    const { default: JSZip } = await import('jszip'); // ← 動態載入，減少初始 bundle
     const zip = new JSZip();
     for (let i = 0; i < images.length; i++) {
       const img = images[i];
-      await new Promise((resolve) => {
-        const el = document.createElement('img');
-        el.crossOrigin = 'anonymous';
-        el.onload = () => {
-          const canvas = resizeImageToCanvas(el, currentSize, fitBg);
-          canvas.toBlob((blob) => {
-            zip.file(buildImageName(brand, sku, i), blob);
-            setZipProgress(i + 1);
-            resolve();
-          }, 'image/jpeg', 0.95);
-        };
-        el.src = img.url;
-      });
+      const canvas = await resizeImageToCanvas(img.url, currentSize, fitBg);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+      zip.file(buildImageName(brand, sku, i), blob);
+      setZipProgress(i + 1);
     }
     const content = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(content);
