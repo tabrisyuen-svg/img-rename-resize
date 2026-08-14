@@ -14,8 +14,4 @@ export default defineConfig({
     minify: 'esbuild',
     sourcemap: false,
   }
-<<<<<<< HEAD
 })
-=======
-})
->>>>>>> c5d06c8 (perf: optimize build config)
