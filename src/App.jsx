@@ -3,9 +3,10 @@ import { Upload, X, Settings, FileArchive, Image, Trash2, AlertCircle, CheckCirc
 import { motion, AnimatePresence } from 'framer-motion';
 
 const SIZES = [
-  { label: '1080 × 1080', value: '1080x1080', desc: 'Square / Crop', ratio: '1 / 1', fit: 'cover', w: 1080, h: 1080 },
-  { label: '1920 × 1080', value: '1920x1080', desc: 'Landscape / Crop', ratio: '16 / 9', fit: 'cover', w: 1920, h: 1080 },
-  { label: '1920 × 1080', value: '1920x1080-fit', desc: 'Landscape / Fit ✦', ratio: '16 / 9', fit: 'contain', w: 1920, h: 1080 },
+  { label: '1080 × 1080', value: '1080x1080',     desc: 'Square / Crop',    ratio: '1 / 1',   fit: 'cover',   w: 1080, h: 1080 },
+  { label: '1080 × 1080', value: '1080x1080-fit',  desc: 'Square / Fit ✦',  ratio: '1 / 1',   fit: 'contain', w: 1080, h: 1080 },
+  { label: '1920 × 1080', value: '1920x1080',      desc: 'Landscape / Crop', ratio: '16 / 9', fit: 'cover',   w: 1920, h: 1080 },
+  { label: '1920 × 1080', value: '1920x1080-fit',  desc: 'Landscape / Fit ✦',ratio: '16 / 9', fit: 'contain', w: 1920, h: 1080 },
 ];
 
 const MAX_IMAGES = 10;
@@ -30,7 +31,6 @@ const buildZipName = (brand, sku) => {
   return prefix ? `${prefix}.zip` : 'images.zip';
 };
 
-// ── 優化：用 createImageBitmap 取代 new Image()，GPU 解碼更快 ──
 const resizeImageToCanvas = async (url, size, fitBg) => {
   const res = await fetch(url);
   const blob = await res.blob();
@@ -54,7 +54,7 @@ const resizeImageToCanvas = async (url, size, fitBg) => {
     const dh = bitmap.height * scale;
     ctx.drawImage(bitmap, (size.w - dw) / 2, (size.h - dh) / 2, dw, dh);
   }
-  bitmap.close(); // 釋放記憶體
+  bitmap.close();
   return canvas;
 };
 
@@ -107,7 +107,6 @@ export default function App() {
     setTimeout(() => setJustCleared(false), 1800);
   }, []);
 
-  // ── 逐張下載 ──────────────────────────────────────────
   const handleDownloadAll = async () => {
     if (images.length === 0 || isDownloading) return;
     setIsDownloading(true);
@@ -129,12 +128,11 @@ export default function App() {
     setDownloadProgress(0);
   };
 
-  // ── ZIP 下載（JSZip 用到才載入）─────────────────────────
   const handleDownloadZip = async () => {
     if (images.length === 0 || isZipping) return;
     setIsZipping(true);
     setZipProgress(0);
-    const { default: JSZip } = await import('jszip'); // ← 動態載入，減少初始 bundle
+    const { default: JSZip } = await import('jszip');
     const zip = new JSZip();
     for (let i = 0; i < images.length; i++) {
       const img = images[i];
@@ -246,39 +244,47 @@ export default function App() {
           {/* Size Selector */}
           <div>
             <label className="block text-xs text-gray-500 uppercase tracking-widest mb-3">輸出尺寸</label>
-            <div className="flex gap-3 flex-wrap">
-              {SIZES.map((size) => {
-                const active = selectedSize === size.value;
-                const isSquare = size.value === '1080x1080';
-                const isFit = size.fit === 'contain';
-                return (
-                  <button key={size.value} onClick={() => setSelectedSize(size.value)}
-                    className={`flex items-center gap-3 px-5 py-3 rounded-xl border-2 transition-all ${
-                      active
-                        ? isFit ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-blue-500 bg-blue-500/10 text-blue-300'
-                        : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600'
-                    }`}>
-                    <div className="relative flex-shrink-0" style={{ width: isSquare ? 26 : 46, height: 26 }}>
-                      <div className={`w-full h-full border-2 rounded ${active ? (isFit ? 'border-purple-400' : 'border-blue-400') : 'border-gray-600'}`} />
-                      {isFit && (
-                        <div className={`absolute border rounded-sm ${active ? 'border-purple-400' : 'border-gray-500'}`}
-                          style={{ top: 4, bottom: 4, left: 6, right: 6 }} />
-                      )}
-                    </div>
-                    <div className="text-left">
-                      <p className="text-sm font-semibold leading-tight">{size.label}</p>
-                      <p className={`text-xs opacity-60 ${isFit && active ? 'text-purple-300' : ''}`}>{size.desc}</p>
-                    </div>
-                    {active && (
-                      <div className={`w-4 h-4 rounded-full flex items-center justify-center ml-1 ${isFit ? 'bg-purple-500' : 'bg-blue-500'}`}>
-                        <svg viewBox="0 0 10 10" width="8" height="8">
-                          <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-                        </svg>
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
+            {/* ── 改為兩行：Square 一行、Landscape 一行 ── */}
+            <div className="space-y-2">
+              {[
+                SIZES.filter(s => s.w === 1080 && s.h === 1080),
+                SIZES.filter(s => s.w === 1920),
+              ].map((group, gi) => (
+                <div key={gi} className="flex gap-3 flex-wrap">
+                  {group.map((size) => {
+                    const active = selectedSize === size.value;
+                    const isSquare = size.w === size.h;
+                    const isFit = size.fit === 'contain';
+                    return (
+                      <button key={size.value} onClick={() => setSelectedSize(size.value)}
+                        className={`flex items-center gap-3 px-5 py-3 rounded-xl border-2 transition-all ${
+                          active
+                            ? isFit ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-blue-500 bg-blue-500/10 text-blue-300'
+                            : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600'
+                        }`}>
+                        <div className="relative flex-shrink-0" style={{ width: isSquare ? 26 : 46, height: 26 }}>
+                          <div className={`w-full h-full border-2 rounded ${active ? (isFit ? 'border-purple-400' : 'border-blue-400') : 'border-gray-600'}`} />
+                          {isFit && (
+                            <div className={`absolute border rounded-sm ${active ? 'border-purple-400' : 'border-gray-500'}`}
+                              style={{ top: 4, bottom: 4, left: isSquare ? 4 : 6, right: isSquare ? 4 : 6 }} />
+                          )}
+                        </div>
+                        <div className="text-left">
+                          <p className="text-sm font-semibold leading-tight">{size.label}</p>
+                          <p className={`text-xs opacity-60 ${isFit && active ? 'text-purple-300' : ''}`}>{size.desc}</p>
+                        </div>
+                        {active && (
+                          <div className={`w-4 h-4 rounded-full flex items-center justify-center ml-1 ${isFit ? 'bg-purple-500' : 'bg-blue-500'}`}>
+                            <svg viewBox="0 0 10 10" width="8" height="8">
+                              <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                            </svg>
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           </div>
 
@@ -289,7 +295,7 @@ export default function App() {
                 <div className="border border-purple-500/30 bg-purple-500/5 rounded-xl px-4 py-3 flex flex-wrap items-center gap-4">
                   <div>
                     <p className="text-xs text-purple-300 font-semibold mb-0.5">Fit 模式</p>
-                    <p className="text-xs text-gray-500">圖片完整顯示，左右貼齊邊界，上下補背景色</p>
+                    <p className="text-xs text-gray-500">圖片完整顯示，等比縮放置中，四邊補背景色</p>
                   </div>
                   <div className="flex items-center gap-2 ml-auto">
                     <span className="text-xs text-gray-500">補色：</span>
@@ -445,11 +451,10 @@ export default function App() {
                   <span className="text-sm font-semibold text-gray-200">下載</span>
                 </div>
                 <p className="text-xs text-gray-500 ml-7">
-                  {images.length} 張 · {selectedSize.replace('x', ' × ').replace('-fit', '')} · {isFitMode ? 'Fit 模式' : 'Crop 模式'}
+                  {images.length} 張 · {currentSize?.label} · {isFitMode ? 'Fit 模式' : 'Crop 模式'}
                 </p>
                 <p className="text-xs font-mono text-purple-300 ml-7 mt-0.5">{buildZipName(brand, sku)}</p>
 
-                {/* 逐張進度條 */}
                 {isDownloading && (
                   <div className="ml-7 mt-2">
                     <span className="text-xs text-blue-400 font-mono">逐張下載 {downloadProgress} / {images.length}</span>
@@ -462,7 +467,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* ZIP 進度條 */}
                 {isZipping && (
                   <div className="ml-7 mt-2">
                     <span className="text-xs text-purple-400 font-mono">壓縮中 {zipProgress} / {images.length}</span>
