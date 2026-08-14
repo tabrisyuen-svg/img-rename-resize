@@ -3,11 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
+"scripts": {
+  "dev": "node --max-old-space-size=512 node_modules/.bin/vite",
+  "build": "node --max-old-space-size=512 node_modules/.bin/vite build",
+  "preview": "node --max-old-space-size=512 node_modules/.bin/vite preview"
+},
   "dependencies": {
     "framer-motion": "^13.1.0",
     "jszip": "^3.10.1",
