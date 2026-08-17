@@ -1,5 +1,6 @@
 self.onmessage = async ({ data }) => {
   const { id, type, buffer, size, fitBg, targetW } = data;
+  console.log('Worker received:', type, size);
   try {
     const bitmap = await createImageBitmap(new Blob([buffer]));
     let canvas;
