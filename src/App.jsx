@@ -83,7 +83,8 @@ const processImageCanvas = async (type, file, options = {}) => {
   ctx = canvas.getContext('2d');
 
   if (size.fit === 'cover') {
-    const scale = Math.max(size.w / img.width, size.h / img.height);
+    const zoom = options.zoom ?? 1.0;
+    const scale = Math.max(size.w / img.width, size.h / img.height) * zoom;
     const dw = img.width  * scale;
     const dh = img.height * scale;
     const dx = (size.w - dw) / 2;
@@ -135,6 +136,7 @@ export default function App() {
   const [zipProgress,      setZipProgress]      = useState(0);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [startOffset,      setStartOffset]      = useState(0);
+  const [zoom,             setZoom]             = useState(1.0);
 
   const fileInputRef = useRef(null);
   const idCounterRef = useRef(0);
@@ -158,8 +160,8 @@ export default function App() {
   const getBlobForImage = useCallback(
     img => renameOnly
       ? Promise.resolve(img.file)
-      : processImageCanvas('resize', img.file, { size: currentSize, fitBg }),
-    [renameOnly, currentSize, fitBg],
+      : processImageCanvas('resize', img.file, { size: currentSize, fitBg, zoom }),
+    [renameOnly, currentSize, fitBg, zoom],
   );
 
   // ── Upload: generate 200 px thumbnail ────────────────────────────────────────
@@ -427,6 +429,22 @@ export default function App() {
                     <input type="color" value={fitBg} onChange={e => setFitBg(e.target.value)}
                       className="w-7 h-7 rounded-full border-2 border-gray-700 bg-transparent cursor-pointer overflow-hidden" title="自訂顏色" />
                   </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {/* Zoom slider */}
+          <AnimatePresence>
+            {!isFitMode && !renameOnly && (
+              <motion.div initial={{ opacity:0, height:0 }} animate={{ opacity:1, height:'auto' }} exit={{ opacity:0, height:0 }} className="overflow-hidden">
+                <div className="border border-blue-500/30 bg-blue-500/5 rounded-xl px-4 py-3 flex items-center gap-4">
+                  <div>
+                    <p className="text-xs text-blue-300 font-semibold mb-0.5">Zoom {zoom.toFixed(1)}×</p>
+                    <p className="text-xs text-gray-500">放大後裁切填滿</p>
+                  </div>
+                  <input type="range" min="1.0" max="2.0" step="0.1" value={zoom}
+                    onChange={e => setZoom(parseFloat(e.target.value))}
+                    className="flex-1 accent-blue-500" />
                 </div>
               </motion.div>
             )}
