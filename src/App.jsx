@@ -1,4 +1,7 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+// NOTE: This file is App.jsx — paste as-is.
+// Worker (src/workers/imageProcessor.worker.js) is unchanged.
+
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   Upload, X, Settings, FileArchive, Image, Trash2,
   AlertCircle, CheckCircle2, RefreshCw, Layers, Tag, Crop, Maximize2, Loader2,
@@ -47,8 +50,13 @@ const pLimit = (concurrency) => {
 };
 
 // ── triggerDownload ───────────────────────────────────────────────────────────
-const triggerDownload = (url, filename) =>
-  Object.assign(document.createElement('a'), { href: url, download: filename }).click();
+// FIX 5: append to DOM before click → guarantees Firefox/Safari honour download attr
+const triggerDownload = (url, filename) => {
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
 
 // ── useImageWorker ────────────────────────────────────────────────────────────
 // Worker file: src/workers/imageProcessor.worker.js
@@ -88,7 +96,7 @@ function useImageWorker() {
    */
   const processImage = useCallback(async (type, file, options = {}) => {
     const id     = ++idRef.current;
-    const buffer = await file.arrayBuffer(); // fresh copy each time; safe to transfer
+    const buffer = await file.arrayBuffer();
     return new Promise((resolve, reject) => {
       pendingRef.current.set(id, { resolve, reject });
       getWorker().postMessage({ id, type, buffer, ...options }, [buffer]);
@@ -100,60 +108,71 @@ function useImageWorker() {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [brand,          setBrand]          = useState('');
-  const [sku,            setSku]            = useState('');
-  const [selectedRes,    setSelectedRes]    = useState('1080');
-  const [selectedMode,   setSelectedMode]   = useState('crop');
-  const [fitBg,          setFitBg]          = useState('#ffffff');
-  const [images,         setImages]         = useState([]);
-  const [isDragging,     setIsDragging]     = useState(false);
-  const [justCleared,    setJustCleared]    = useState(false);
-  const [isUploading,    setIsUploading]    = useState(false);
-  const [isDownloading,  setIsDownloading]  = useState(false);
-  const [isZipping,      setIsZipping]      = useState(false);
-  const [isMerging,      setIsMerging]      = useState(false);
-  const [zipProgress,    setZipProgress]    = useState(0);
+  const [brand,            setBrand]            = useState('');
+  const [sku,              setSku]              = useState('');
+  const [selectedRes,      setSelectedRes]      = useState('1080');
+  const [selectedMode,     setSelectedMode]     = useState('crop');
+  const [fitBg,            setFitBg]            = useState('#ffffff');
+  const [images,           setImages]           = useState([]);
+  const [isDragging,       setIsDragging]       = useState(false);
+  const [justCleared,      setJustCleared]      = useState(false);
+  const [isUploading,      setIsUploading]      = useState(false);
+  const [isDownloading,    setIsDownloading]    = useState(false);
+  const [isZipping,        setIsZipping]        = useState(false);
+  const [isMerging,        setIsMerging]        = useState(false);
+  const [zipProgress,      setZipProgress]      = useState(0);
   const [downloadProgress, setDownloadProgress] = useState(0);
-  const [startOffset,    setStartOffset]    = useState(0);
+  const [startOffset,      setStartOffset]      = useState(0);
 
   const fileInputRef = useRef(null);
-  const idCounterRef = useRef(0); // stable image ID counter
+  const idCounterRef = useRef(0);
 
   const { processImage } = useImageWorker();
 
-  const renameOnly  = selectedMode === 'rename';
-  const isFitMode   = selectedMode === 'fit';
-  const currentSize = SIZES.find(s =>
-    selectedRes === '1080'
-      ? s.w === 1080 && (isFitMode ? s.fit === 'contain' : s.fit === 'cover')
-      : s.w === 1920 && (isFitMode ? s.fit === 'contain' : s.fit === 'cover'),
-  );
+  const renameOnly = selectedMode === 'rename';
+  const isFitMode  = selectedMode === 'fit';
+
+  // FIX 3: useMemo stabilises the object reference so getBlobForImage's
+  // useCallback dependency array actually works correctly.
+  const currentSize = useMemo(() =>
+    SIZES.find(s =>
+      selectedRes === '1080'
+        ? s.w === 1080 && (isFitMode ? s.fit === 'contain' : s.fit === 'cover')
+        : s.w === 1920 && (isFitMode ? s.fit === 'contain' : s.fit === 'cover'),
+    ),
+  [selectedRes, isFitMode]);
 
   const remaining = MAX_IMAGES - images.length;
   const atLimit   = images.length >= MAX_IMAGES;
   const isBusy    = isDownloading || isZipping || isMerging || isUploading;
 
   // ── Upload: generate 200px thumbnail in Worker, keep original File ──────────
+  // FIX 4: track every URL created inside the loop; revoke all on partial failure
   const addImages = useCallback(async (files) => {
     const valid = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, remaining);
     if (!valid.length) return;
     setIsUploading(true);
+    const createdUrls = [];
     try {
       const limit   = pLimit(3);
       const newImgs = await Promise.all(
         valid.map(file =>
           limit(async () => {
             const thumbBlob = await processImage('thumbnail', file);
+            const thumbUrl  = URL.createObjectURL(thumbBlob);
+            createdUrls.push(thumbUrl); // register before returning
             return {
-              id:       ++idCounterRef.current,
-              file,                                       // original File, used for final export
-              thumbUrl: URL.createObjectURL(thumbBlob),   // 200px preview blob URL
+              id: ++idCounterRef.current,
+              file,
+              thumbUrl,
             };
           }),
         ),
       );
       setImages(prev => [...prev, ...newImgs]);
     } catch (e) {
+      // Revoke every URL that was already created before the failure
+      createdUrls.forEach(url => URL.revokeObjectURL(url));
       console.error('Thumbnail generation failed:', e);
     } finally {
       setIsUploading(false);
@@ -177,19 +196,20 @@ export default function App() {
   );
 
   // ── Download all: preprocess concurrently (×3), then click sequentially ─────
+  // FIX 1: URL.revokeObjectURL moved to AFTER the 200 ms delay so the browser
+  // has finished initiating the download before the blob is destroyed.
   const handleDownloadAll = async () => {
     if (!images.length || isBusy) return;
     setIsDownloading(true); setDownloadProgress(0);
     try {
       const limit = pLimit(3);
-      // Process all images concurrently before triggering any downloads
       const blobs = await Promise.all(images.map(img => limit(() => getBlobForImage(img))));
       for (let i = 0; i < blobs.length; i++) {
         const url = URL.createObjectURL(blobs[i]);
         triggerDownload(url, buildImageName(brand, sku, i, startOffset));
-        URL.revokeObjectURL(url); // revoke immediately after click
         setDownloadProgress(i + 1);
-        await new Promise(r => setTimeout(r, 200)); // minimal delay for browser to process each click
+        await new Promise(r => setTimeout(r, 200)); // wait first …
+        URL.revokeObjectURL(url);                   // … then revoke ✓
       }
     } catch (e) { console.error('Download failed:', e); }
     setIsDownloading(false); setDownloadProgress(0);
@@ -228,7 +248,6 @@ export default function App() {
       const scaledBlobs = await Promise.all(
         images.map(img => limit(() => processImage('merge', img.file, { targetW: currentSize.w }))),
       );
-      // createImageBitmap is cheap (just decode, no resize); compositing is fast
       const bitmaps = await Promise.all(scaledBlobs.map(b => createImageBitmap(b)));
       const totalH  = bitmaps.reduce((s, bm) => s + bm.height, 0);
       const merged  = Object.assign(document.createElement('canvas'), { width: currentSize.w, height: totalH });
@@ -244,7 +263,7 @@ export default function App() {
     setIsMerging(false);
   };
 
-  // ── UI (identical layout, only img src and remove handler changed) ───────────
+  // ── UI ───────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-950 text-white font-sans">
 
@@ -495,15 +514,23 @@ export default function App() {
                             aspectRatio: renameOnly ? '1 / 1' : currentSize?.ratio,
                             background:  !renameOnly && isFitMode ? fitBg : '#111',
                           }}>
-                          {/* thumbUrl: 200px Worker-generated thumbnail */}
-                          <img src={img.thumbUrl} alt="" className="w-full h-full" style={{ objectFit: 'cover' }} />
+                          {/*
+                            FIX 2: objectFit now mirrors the actual export mode.
+                            Crop → cover  |  Fit → contain  |  Rename → cover (original aspect)
+                          */}
+                          <img
+                            src={img.thumbUrl}
+                            alt=""
+                            className="w-full h-full"
+                            style={{ objectFit: !renameOnly && isFitMode ? 'contain' : 'cover' }}
+                          />
                           <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                             <button
                               onClick={e => {
                                 e.stopPropagation();
                                 setImages(p => {
                                   const found = p.find(x => x.id === img.id);
-                                  if (found) URL.revokeObjectURL(found.thumbUrl); // revoke on single remove
+                                  if (found) URL.revokeObjectURL(found.thumbUrl);
                                   return p.filter(x => x.id !== img.id);
                                 });
                               }}
@@ -552,7 +579,7 @@ export default function App() {
                     <span className="text-xs text-blue-400 font-mono">逐張下載 {downloadProgress} / {images.length}</span>
                     <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden mt-1">
                       <motion.div className="h-full bg-blue-500 rounded-full" initial={{ width:0 }}
-                        animate={{ width:`${(downloadProgress/images.length)*100}%` }} transition={{ duration:0.3 }} />
+                        animate={{ width:`${(downloadProgress/images.length)*100}%`}} transition={{ duration:0.3 }} />
                     </div>
                   </motion.div>
                 )}
@@ -561,7 +588,7 @@ export default function App() {
                     <span className="text-xs text-purple-400 font-mono">壓縮中 {zipProgress} / {images.length}</span>
                     <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden mt-1">
                       <motion.div className="h-full bg-purple-500 rounded-full" initial={{ width:0 }}
-                        animate={{ width:`${(zipProgress/images.length)*100}%` }} transition={{ duration:0.3 }} />
+                        animate={{ width:`${(zipProgress/images.length)*100}%`}} transition={{ duration:0.3 }} />
                     </div>
                   </motion.div>
                 )}
