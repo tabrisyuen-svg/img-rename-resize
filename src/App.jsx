@@ -77,10 +77,10 @@ const processImageCanvas = async (type, file, options = {}) => {
     ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0, w, h);
 
-  } else if (type === 'resize') {
-    const { size, fitBg = '#ffffff' } = options;
-    canvas = Object.assign(document.createElement('canvas'), { width: size.w, height: size.h });
-    ctx = canvas.getContext('2d');
+} else if (type === 'resize') {
+  const { size, fitBg = '#ffffff' } = options;
+  canvas = Object.assign(document.createElement('canvas'), { width: size.w, height: size.h });
+  ctx = canvas.getContext('2d');
 
   if (size.fit === 'cover') {
     const scale = Math.max(size.w / img.width, size.h / img.height);
@@ -89,19 +89,17 @@ const processImageCanvas = async (type, file, options = {}) => {
     const dx = (size.w - dw) / 2;
     const dy = (size.h - dh) / 2;
     ctx.drawImage(img, dx, dy, dw, dh);
+  } else {
+    // Fit with background padding
+    ctx.fillStyle = fitBg;
+    ctx.fillRect(0, 0, size.w, size.h);
+    const ratio = Math.min(size.w / img.width, size.h / img.height);
+    const w = Math.round(img.width  * ratio);
+    const h = Math.round(img.height * ratio);
+    const x = Math.round((size.w - w) / 2);
+    const y = Math.round((size.h - h) / 2);
+    ctx.drawImage(img, x, y, w, h);
   }
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size.w, size.h);
-    } else {
-      // Fit with background padding
-      ctx.fillStyle = fitBg;
-      ctx.fillRect(0, 0, size.w, size.h);
-      const ratio = Math.min(size.w / img.width, size.h / img.height);
-      const w = Math.round(img.width  * ratio);
-      const h = Math.round(img.height * ratio);
-      const x = Math.round((size.w - w) / 2);
-      const y = Math.round((size.h - h) / 2);
-      ctx.drawImage(img, x, y, w, h);
-    }
 
   } else if (type === 'merge') {
     const { targetW } = options;
