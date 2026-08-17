@@ -1,6 +1,3 @@
-// NOTE: This file is App.jsx — paste as-is.
-// Worker (src/workers/imageProcessor.worker.js) is unchanged.
-
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   Upload, X, Settings, FileArchive, Image, Trash2,
@@ -28,12 +25,12 @@ const MODE_OPTIONS = [
   { value: 'rename', label: 'Rename', sub: '只重命名', Icon: Tag,       active: 'border-amber-500 bg-amber-500/10 text-amber-300',   dot: 'bg-amber-500'  },
 ];
 
-// ── Naming helpers ────────────────────────────────────────────────────────────
+// ── Naming helpers ─────────────────────────────────────────────────────────────
 const buildPrefix    = (brand, sku) => { const b = brand.trim(), s = sku.trim(); return b && s ? `${b}-${s}` : b || s || ''; };
 const buildImageName = (brand, sku, i, offset = 0) => { const num = String(i + 1 + offset).padStart(2,'0'); const p = buildPrefix(brand,sku); return p ? `${p}-${num}.jpg` : `${num}.jpg`; };
 const buildZipName   = (brand, sku) => { const p = buildPrefix(brand,sku); return p ? `${p}.zip` : 'images.zip'; };
 
-// ── Inline p-limit (concurrency limiter, no external dep) ────────────────────
+// ── pLimit (inline concurrency limiter) ───────────────────────────────────────
 const pLimit = (concurrency) => {
   let active = 0;
   const queue = [];
@@ -50,7 +47,6 @@ const pLimit = (concurrency) => {
 };
 
 // ── triggerDownload ───────────────────────────────────────────────────────────
-// FIX 5: append to DOM before click → guarantees Firefox/Safari honour download attr
 const triggerDownload = (url, filename) => {
   const a = Object.assign(document.createElement('a'), { href: url, download: filename });
   document.body.appendChild(a);
@@ -58,53 +54,75 @@ const triggerDownload = (url, filename) => {
   document.body.removeChild(a);
 };
 
-// ── useImageWorker ────────────────────────────────────────────────────────────
-// Worker file: src/workers/imageProcessor.worker.js
-function useImageWorker() {
-  const workerRef  = useRef(null);
-  const pendingRef = useRef(new Map());
-  const idRef      = useRef(0);
+// ── Canvas-based image processor (replaces Web Worker) ───────────────────────
+const loadImage = (file) =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new window.Image();
+    img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); };
+    img.src = url;
+  });
 
-  const getWorker = useCallback(() => {
-    if (workerRef.current) return workerRef.current;
-    const w = new Worker(
-      new URL('./workers/imageProcessor.worker.js', import.meta.url),
-      { type: 'module' },
-    );
-    w.onmessage = ({ data: { id, ok, buffer, error } }) => {
-      const p = pendingRef.current.get(id);
-      if (!p) return;
-      pendingRef.current.delete(id);
-      ok
-        ? p.resolve(new Blob([buffer], { type: 'image/jpeg' }))
-        : p.reject(new Error(error));
-    };
-    w.onerror = e => console.error('[ImageWorker]', e.message);
-    workerRef.current = w;
-    return w;
-  }, []);
+const processImageCanvas = async (type, file, options = {}) => {
+  const img = await loadImage(file);
+  let canvas, ctx;
 
-  // Terminate worker on unmount
-  useEffect(() => () => { workerRef.current?.terminate(); workerRef.current = null; }, []);
+  if (type === 'thumbnail') {
+    const MAX = 200;
+    const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
+    const w = Math.max(1, Math.round(img.width  * ratio));
+    const h = Math.max(1, Math.round(img.height * ratio));
+    canvas = Object.assign(document.createElement('canvas'), { width: w, height: h });
+    ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
 
-  /**
-   * Send a task to the worker.
-   * @param {'resize'|'merge'|'thumbnail'} type
-   * @param {File} file
-   * @param {object} options  { size, fitBg } for resize | { targetW } for merge
-   * @returns {Promise<Blob>}
-   */
-  const processImage = useCallback(async (type, file, options = {}) => {
-    const id     = ++idRef.current;
-    const buffer = await file.arrayBuffer();
-    return new Promise((resolve, reject) => {
-      pendingRef.current.set(id, { resolve, reject });
-      getWorker().postMessage({ id, type, buffer, ...options }, [buffer]);
-    });
-  }, [getWorker]);
+  } else if (type === 'resize') {
+    const { size, fitBg = '#ffffff' } = options;
+    canvas = Object.assign(document.createElement('canvas'), { width: size.w, height: size.h });
+    ctx = canvas.getContext('2d');
 
-  return { processImage };
-}
+    if (size.fit === 'cover') {
+      // Crop to fill
+      const srcR = img.width / img.height;
+      const dstR = size.w  / size.h;
+      let sx, sy, sw, sh;
+      if (srcR > dstR) {
+        sh = img.height; sw = sh * dstR;
+        sy = 0;          sx = (img.width - sw) / 2;
+      } else {
+        sw = img.width;  sh = sw / dstR;
+        sx = 0;          sy = (img.height - sh) / 2;
+      }
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size.w, size.h);
+    } else {
+      // Fit with background padding
+      ctx.fillStyle = fitBg;
+      ctx.fillRect(0, 0, size.w, size.h);
+      const ratio = Math.min(size.w / img.width, size.h / img.height);
+      const w = Math.round(img.width  * ratio);
+      const h = Math.round(img.height * ratio);
+      const x = Math.round((size.w - w) / 2);
+      const y = Math.round((size.h - h) / 2);
+      ctx.drawImage(img, x, y, w, h);
+    }
+
+  } else if (type === 'merge') {
+    const { targetW } = options;
+    const ratio = targetW / img.width;
+    const h = Math.max(1, Math.round(img.height * ratio));
+    canvas = Object.assign(document.createElement('canvas'), { width: targetW, height: h });
+    ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, targetW, h);
+  }
+
+  return new Promise((resolve, reject) =>
+    canvas.toBlob(
+      b => b ? resolve(b) : reject(new Error('toBlob failed')),
+      'image/jpeg', 0.92,
+    ),
+  );
+};
 
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -127,13 +145,9 @@ export default function App() {
   const fileInputRef = useRef(null);
   const idCounterRef = useRef(0);
 
-  const { processImage } = useImageWorker();
-
   const renameOnly = selectedMode === 'rename';
   const isFitMode  = selectedMode === 'fit';
 
-  // FIX 3: useMemo stabilises the object reference so getBlobForImage's
-  // useCallback dependency array actually works correctly.
   const currentSize = useMemo(() =>
     SIZES.find(s =>
       selectedRes === '1080'
@@ -146,8 +160,15 @@ export default function App() {
   const atLimit   = images.length >= MAX_IMAGES;
   const isBusy    = isDownloading || isZipping || isMerging || isUploading;
 
-  // ── Upload: generate 200px thumbnail in Worker, keep original File ──────────
-  // FIX 4: track every URL created inside the loop; revoke all on partial failure
+  // ── Get export blob ──────────────────────────────────────────────────────────
+  const getBlobForImage = useCallback(
+    img => renameOnly
+      ? Promise.resolve(img.file)
+      : processImageCanvas('resize', img.file, { size: currentSize, fitBg }),
+    [renameOnly, currentSize, fitBg],
+  );
+
+  // ── Upload: generate 200 px thumbnail ────────────────────────────────────────
   const addImages = useCallback(async (files) => {
     const valid = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, remaining);
     if (!valid.length) return;
@@ -158,28 +179,23 @@ export default function App() {
       const newImgs = await Promise.all(
         valid.map(file =>
           limit(async () => {
-            const thumbBlob = await processImage('thumbnail', file);
+            const thumbBlob = await processImageCanvas('thumbnail', file);
             const thumbUrl  = URL.createObjectURL(thumbBlob);
-            createdUrls.push(thumbUrl); // register before returning
-            return {
-              id: ++idCounterRef.current,
-              file,
-              thumbUrl,
-            };
+            createdUrls.push(thumbUrl);
+            return { id: ++idCounterRef.current, file, thumbUrl };
           }),
         ),
       );
       setImages(prev => [...prev, ...newImgs]);
     } catch (e) {
-      // Revoke every URL that was already created before the failure
       createdUrls.forEach(url => URL.revokeObjectURL(url));
       console.error('Thumbnail generation failed:', e);
     } finally {
       setIsUploading(false);
     }
-  }, [remaining, processImage]);
+  }, [remaining]);
 
-  // ── Clear all: revoke every thumbUrl before wiping state ────────────────────
+  // ── Clear all ────────────────────────────────────────────────────────────────
   const handleClearAll = useCallback(() => {
     setImages(prev => { prev.forEach(img => URL.revokeObjectURL(img.thumbUrl)); return []; });
     setJustCleared(true);
@@ -187,17 +203,7 @@ export default function App() {
     setTimeout(() => setJustCleared(false), 1800);
   }, []);
 
-  // ── Get export blob (Worker for resize, original File for rename-only) ───────
-  const getBlobForImage = useCallback(
-    img => renameOnly
-      ? img.file
-      : processImage('resize', img.file, { size: currentSize, fitBg }),
-    [renameOnly, currentSize, fitBg, processImage],
-  );
-
-  // ── Download all: preprocess concurrently (×3), then click sequentially ─────
-  // FIX 1: URL.revokeObjectURL moved to AFTER the 200 ms delay so the browser
-  // has finished initiating the download before the blob is destroyed.
+  // ── Download all (sequential) ────────────────────────────────────────────────
   const handleDownloadAll = async () => {
     if (!images.length || isBusy) return;
     setIsDownloading(true); setDownloadProgress(0);
@@ -208,19 +214,19 @@ export default function App() {
         const url = URL.createObjectURL(blobs[i]);
         triggerDownload(url, buildImageName(brand, sku, i, startOffset));
         setDownloadProgress(i + 1);
-        await new Promise(r => setTimeout(r, 200)); // wait first …
-        URL.revokeObjectURL(url);                   // … then revoke ✓
+        await new Promise(r => setTimeout(r, 200));
+        URL.revokeObjectURL(url);
       }
     } catch (e) { console.error('Download failed:', e); }
     setIsDownloading(false); setDownloadProgress(0);
   };
 
-  // ── Download ZIP: concurrent processing, then single-file download ───────────
+  // ── Download ZIP ─────────────────────────────────────────────────────────────
   const handleDownloadZip = async () => {
     if (!images.length || isBusy) return;
     setIsZipping(true); setZipProgress(0);
     try {
-      const { default: JSZip } = await import('jszip');
+      const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
       const zip   = new JSZip();
       const limit = pLimit(3);
       await Promise.all(
@@ -239,14 +245,14 @@ export default function App() {
     setIsZipping(false); setZipProgress(0);
   };
 
-  // ── Merge long: Worker resizes each image, main thread composites vertically ─
+  // ── Merge long ────────────────────────────────────────────────────────────────
   const handleMergeLong = async () => {
     if (!images.length || isBusy || renameOnly) return;
     setIsMerging(true);
     try {
       const limit       = pLimit(3);
       const scaledBlobs = await Promise.all(
-        images.map(img => limit(() => processImage('merge', img.file, { targetW: currentSize.w }))),
+        images.map(img => limit(() => processImageCanvas('merge', img.file, { targetW: currentSize.w }))),
       );
       const bitmaps = await Promise.all(scaledBlobs.map(b => createImageBitmap(b)));
       const totalH  = bitmaps.reduce((s, bm) => s + bm.height, 0);
@@ -514,10 +520,6 @@ export default function App() {
                             aspectRatio: renameOnly ? '1 / 1' : currentSize?.ratio,
                             background:  !renameOnly && isFitMode ? fitBg : '#111',
                           }}>
-                          {/*
-                            FIX 2: objectFit now mirrors the actual export mode.
-                            Crop → cover  |  Fit → contain  |  Rename → cover (original aspect)
-                          */}
                           <img
                             src={img.thumbUrl}
                             alt=""
