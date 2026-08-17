@@ -82,18 +82,14 @@ const processImageCanvas = async (type, file, options = {}) => {
     canvas = Object.assign(document.createElement('canvas'), { width: size.w, height: size.h });
     ctx = canvas.getContext('2d');
 
-    if (size.fit === 'cover') {
-      // Crop to fill
-      const srcR = img.width / img.height;
-      const dstR = size.w  / size.h;
-      let sx, sy, sw, sh;
-      if (srcR > dstR) {
-        sh = img.height; sw = sh * dstR;
-        sy = 0;          sx = (img.width - sw) / 2;
-      } else {
-        sw = img.width;  sh = sw / dstR;
-        sx = 0;          sy = (img.height - sh) / 2;
-      }
+if (size.fit === 'cover') {
+  const scale = Math.max(size.w / img.width, size.h / img.height);
+  const dw = img.width  * scale;
+  const dh = img.height * scale;
+  const dx = (size.w - dw) / 2;
+  const dy = (size.h - dh) / 2;
+  ctx.drawImage(img, dx, dy, dw, dh);
+}
       ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size.w, size.h);
     } else {
       // Fit with background padding
