@@ -535,8 +535,11 @@ export default function App() {
                           <img
                             src={img.thumbUrl}
                             alt=""
-                            className="w-full h-full"
-                            style={{ objectFit: !renameOnly && isFitMode ? 'contain' : 'cover' }}
+                            className="w-full h-full transition-transform duration-150"
+                            style={{ 
+                              objectFit: !renameOnly && isFitMode ? 'contain' : 'cover' ,  //
+                              transform: !renameOnly && !isFitMode ? `scale(${zoom})` : 'none',
+                            }}
                           />
                           <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                             <button
